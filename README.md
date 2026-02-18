@@ -1,7 +1,7 @@
 # The JSON Web Token Toolkit v2
 >*jwt_tool.py* is a toolkit for validating, forging, scanning and tampering JWTs (JSON Web Tokens).  
 
-![jwt_tool version](https://img.shields.io/badge/version-v2.2.7-blue) ![python version](https://img.shields.io/badge/python-v3.6+-green)
+![jwt_tool version](https://img.shields.io/badge/version-v2.3.0-blue) ![python version](https://img.shields.io/badge/python-v3.6+-green)
 
 ![logo](https://user-images.githubusercontent.com/19988419/100555535-18598280-3294-11eb-80ed-ca5a0c3455d6.png)
 
@@ -13,6 +13,7 @@ Its functionality includes:
   * (CVE-2018-0114) ***Key injection*** vulnerability
   * (CVE-2019-20933/CVE-2020-28637) ***Blank password*** vulnerability
   * (CVE-2020-28042) ***Null signature*** vulnerability
+  * (CVE-2022-21449) ***Psychic Signature*** ECDSA vulnerability
 * Scanning for misconfigurations or known weaknesses
 * Fuzzing claim values to provoke unexpected behaviours
 * Testing the validity of a secret/key file/Public Key/JWKS key
@@ -20,6 +21,7 @@ Its functionality includes:
 * Forging new token header and payload contents and creating a new signature with the **key** or via another attack method
 * Timestamp tampering
 * RSA and ECDSA key generation, and reconstruction (from JWKS files)
+* Rate-limiting for all attacks
 * ...and lots more!
 
 ---
@@ -98,6 +100,7 @@ Some options such as Verifying tokens require additional parameters/files to be 
 All modes now allow for sending the token directly to an application.  
 You need to specify:  
 * target URL (-t)
+* instead of a target URL, you can put your HTTP request into a file and reference the file with -r. This AUTOMATICALLY populates headers, cookies and POST data so this is the recommended option
 * a request header (-rh) or request cookies (-rc) that are needed by the application (***at least one must contain the token***)
 * (optional) any POST data (where the request is a POST)
 * (optional) any additional jwt_tool options, such as modes or tampering/injection options  

